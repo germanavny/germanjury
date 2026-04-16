@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import portfolio as _port
 _port.PORTFOLIO_FILE = os.path.join(DATA_DIR, "portfolio.json")
 _port.TRADE_LOG_FILE = os.path.join(DATA_DIR, "trade_log.json")
+_port.JOURNAL_FILE   = os.path.join(DATA_DIR, "journal.json")
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -27,7 +28,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
 
-from portfolio import load_portfolio, load_trade_log, get_equity, STARTING_BALANCE
+from portfolio import load_portfolio, load_trade_log, load_journal, get_equity, STARTING_BALANCE
 from strategy import fetch_data, compute_indicators, generate_signal, MASTER_LEVELS
 from run_trader import run_day
 
@@ -160,9 +161,21 @@ def api_data():
         })
     levels.sort(key=lambda x: abs(x["dist"]))
 
+    today_log = daily_log[-1] if daily_log else {}
+    explanation = _build_explanation(portfolio, pos, price, sig, daily_log)
+    monthly_pnl = _calc_monthly_pnl(daily_log)
+
     return jsonify({
         "timestamp":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "last_price_date": cache.get("date", "N/A"),
+        "explanation":     explanation,
+        "today_action": {
+            "date":   today_log.get("date", ""),
+            "action": today_log.get("action", ""),
+            "price":  today_log.get("price", 0),
+            "pnl":    today_log.get("pnl", 0),
+        },
+        "monthly_pnl": monthly_pnl,
         "account": {
             "starting":  STARTING_BALANCE,
             "cash":      round(portfolio.get("cash", 0), 2),
@@ -217,6 +230,52 @@ def api_data():
         "eq_curve": eq_curve,
         "levels":   levels,
     })
+
+
+def _build_explanation(portfolio, pos, price, sig, daily_log):
+    """Generate plain-language explanation of current status."""
+    if not pos.get("active"):
+        last = next((d for d in reversed(daily_log) if d.get("action", "").startswith("CLOSED")), None)
+        if last:
+            pnl = last.get("pnl", 0)
+            result = "ברווח" if pnl >= 0 else "בהפסד"
+            return (f"אין פוזיציה פתוחה כרגע. "
+                    f"העסקה האחרונה נסגרה {result} של ${pnl:+.2f}. "
+                    f"המערכת מחכה להזדמנות הבאה.")
+        return "אין פוזיציה פתוחה. המערכת סורקת הזדמנויות כל יום."
+
+    side     = pos["side"]
+    entry    = pos["entry_price"]
+    sl       = pos["stop_loss"]
+    tp       = pos["take_profit"]
+    days_in  = 0
+    if pos.get("entry_date"):
+        from datetime import date
+        try:
+            days_in = (date.today() - date.fromisoformat(pos["entry_date"])).days
+        except Exception:
+            pass
+    unrl = (entry - price) * pos["shares"] if side == "short" else (price - entry) * pos["shares"]
+    direction = "ירידה" if side == "short" else "עלייה"
+    action    = "מכרנו בחסר (SHORT)" if side == "short" else "קנינו (LONG)"
+    status    = "ברווח" if unrl >= 0 else "בהפסד"
+
+    return (
+        f"{action} ב-${entry:.2f} לפני {days_in} ימים — מהמרים על {direction}. "
+        f"כרגע {status} של ${unrl:+.2f}. "
+        f"יציאה אוטומטית: רווח ב-${tp:.2f} | הגנה ב-${sl:.2f}."
+    )
+
+
+def _calc_monthly_pnl(daily_log):
+    """Sum P&L for the current calendar month."""
+    month = datetime.now().strftime("%Y-%m")
+    return round(sum(d.get("pnl", 0) for d in daily_log if d.get("date", "").startswith(month)), 2)
+
+
+@app.route("/api/journal")
+def api_journal():
+    return jsonify(load_journal())
 
 
 @app.route("/api/refresh")

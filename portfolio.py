@@ -10,6 +10,7 @@ from typing import Optional
 
 PORTFOLIO_FILE = os.path.join(os.path.dirname(__file__), "portfolio.json")
 TRADE_LOG_FILE = os.path.join(os.path.dirname(__file__), "trade_log.json")
+JOURNAL_FILE   = os.path.join(os.path.dirname(__file__), "journal.json")
 
 STARTING_BALANCE = 1000.00
 
@@ -183,3 +184,34 @@ def _holding_days(entry_date: Optional[str], exit_date: str) -> int:
         return 0
     fmt = "%Y-%m-%d"
     return (datetime.strptime(exit_date, fmt) - datetime.strptime(entry_date, fmt)).days
+
+
+# ── LEARNING JOURNAL ──────────────────────────────────────────────────────────
+
+def load_journal() -> list:
+    if not os.path.exists(JOURNAL_FILE):
+        return []
+    with open(JOURNAL_FILE, "r") as f:
+        return json.load(f)
+
+
+def append_journal_entry(entry: dict) -> None:
+    """Called when a position opens. Records entry conditions for learning."""
+    journal = load_journal()
+    journal.append(entry)
+    with open(JOURNAL_FILE, "w") as f:
+        json.dump(journal, f, indent=2)
+
+
+def update_journal_outcome(entry_date: str, exit_price: float, exit_reason: str, pnl: float) -> None:
+    """Called when a position closes. Updates the journal entry with the result."""
+    journal = load_journal()
+    for entry in journal:
+        if entry.get("entry_date") == entry_date and entry.get("outcome") is None:
+            entry["exit_price"]  = round(exit_price, 4)
+            entry["exit_reason"] = exit_reason
+            entry["pnl"]         = round(pnl, 4)
+            entry["outcome"]     = "WIN" if pnl >= 0 else "LOSS"
+            break
+    with open(JOURNAL_FILE, "w") as f:
+        json.dump(journal, f, indent=2)

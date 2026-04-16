@@ -743,6 +743,140 @@
     0%, 100% { opacity: 1; }
     50%       { opacity: 0.6; }
   }
+
+  /* ── MOBILE RESPONSIVE ───────────────────────────────────────────────── */
+  /* ── DAILY SUMMARY BANNER ───────────────────────────────────────────────── */
+  .summary-banner {
+    background: #ffffff;
+    border-bottom: 1px solid var(--border);
+    padding: 10px 24px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    direction: rtl;
+    text-align: right;
+  }
+
+  .summary-banner-icon {
+    font-size: 1.4rem;
+    flex-shrink: 0;
+  }
+
+  .summary-banner-text {
+    color: var(--white);
+    font-family: var(--font-mono);
+  }
+
+  .summary-banner-label {
+    font-size: 0.58rem;
+    letter-spacing: 0.2em;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+
+  @media (max-width: 768px) {
+    .summary-banner { padding: 10px 14px; font-size: 0.72rem; }
+  }
+
+  /* ── POSITION PLAIN EXPLANATION ─────────────────────────────────────────── */
+  .pos-explanation {
+    font-size: 0.72rem;
+    color: var(--dim);
+    line-height: 1.6;
+    margin-top: 10px;
+    padding: 10px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    direction: rtl;
+    text-align: right;
+  }
+
+  @media (max-width: 768px) {
+    html { font-size: 13px; }
+
+    /* Topbar */
+    .topbar { padding: 0 14px; height: 48px; }
+    .ticker-strip { display: none; }
+    .tag { display: none; }
+    .logo { font-size: 0.95rem; }
+    .timestamp { display: none; }
+
+    /* Main grid → single column */
+    .main {
+      padding: 12px;
+      grid-template-columns: 1fr;
+      grid-template-rows: auto;
+      gap: 10px;
+    }
+
+    /* Metric cards → 2 per row */
+    .metric-row {
+      grid-column: 1;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+
+    .metric-value { font-size: 1.2rem; }
+
+    /* Signal panel */
+    .signal-panel {
+      grid-column: 1;
+      grid-row: auto;
+    }
+
+    .signal-badge { font-size: 1.5rem; padding: 8px 14px; }
+    .signal-grid { grid-template-columns: repeat(2, 1fr); }
+
+    /* Position panel */
+    .position-panel {
+      grid-column: 1;
+      grid-row: auto;
+    }
+
+    /* Price panel */
+    .price-panel {
+      grid-column: 1;
+      grid-row: auto;
+    }
+    .price-big { font-size: 1.8rem; }
+
+    /* Chart */
+    .chart-panel {
+      grid-column: 1;
+      grid-row: auto;
+    }
+
+    /* Levels */
+    .levels-panel {
+      grid-column: 1;
+      grid-row: auto;
+    }
+
+    /* Trades */
+    .trades-panel {
+      grid-column: 1;
+      grid-row: auto;
+    }
+
+    /* Trade table — hide less important columns on mobile */
+    .trades-table th:nth-child(4),
+    .trades-table td:nth-child(4),
+    .trades-table th:nth-child(5),
+    .trades-table td:nth-child(5) { display: none; }
+
+    .trades-table { font-size: 0.65rem; }
+    .trades-table td, .trades-table th { padding: 5px 6px; }
+  }
+
+  @media (max-width: 400px) {
+    .metric-row { grid-template-columns: 1fr 1fr; }
+    .signal-grid { grid-template-columns: 1fr 1fr; }
+    .price-big { font-size: 1.5rem; }
+  }
 </style>
 </head>
 <body>
@@ -791,6 +925,15 @@
   </div>
 </header>
 
+<!-- ── DAILY SUMMARY BANNER ─────────────────────────────────────────────── -->
+<div class="summary-banner" id="summaryBanner">
+  <div class="summary-banner-icon" id="summaryIcon">📊</div>
+  <div>
+    <div class="summary-banner-label">מה קורה עכשיו</div>
+    <div class="summary-banner-text" id="summaryText">טוען נתונים...</div>
+  </div>
+</div>
+
 <!-- ── MAIN GRID ────────────────────────────────────────────────────────── -->
 <main class="main">
 
@@ -811,10 +954,10 @@
       <div class="metric-value" id="mc-pnl-val">—</div>
       <div class="metric-sub" id="mc-pnl-pct">—</div>
     </div>
-    <div class="metric-card fade-in stagger-4" id="mc-dd">
-      <div class="metric-label">Drawdown</div>
-      <div class="metric-value" id="mc-dd-val">—</div>
-      <div class="metric-sub" id="mc-dd-peak">Peak: —</div>
+    <div class="metric-card fade-in stagger-4" id="mc-month">
+      <div class="metric-label">This Month</div>
+      <div class="metric-value" id="mc-month-val">—</div>
+      <div class="metric-sub" id="mc-month-sub">Monthly P&amp;L</div>
     </div>
     <div class="metric-card fade-in stagger-5" id="mc-trades">
       <div class="metric-label">Trades</div>
@@ -898,6 +1041,7 @@
     <div id="pos-content">
       <div class="pos-flat">NO ACTIVE POSITION<br><span style="font-size:0.6rem;">Waiting for Soloway setup</span></div>
     </div>
+    <div class="pos-explanation" id="pos-explanation" style="display:none;"></div>
   </div>
 
   <!-- PRICE PANEL (top right) -->
@@ -1089,11 +1233,12 @@ function renderData(d) {
   mcPnl.classList.add(ac.total_pnl >= 0 ? 'green' : 'red');
   setEl('mc-pnl-pct', fmtP(ac.pnl_pct));
 
-  setEl('mc-dd-val',  fmtP(ac.drawdown));
-  setEl('mc-dd-peak', `Peak: ${fmtDol(ac.peak)}`);
-  const mcDd = document.getElementById('mc-dd');
-  mcDd.classList.remove('green','red','blue','amber');
-  mcDd.classList.add(ac.drawdown < -5 ? 'red' : ac.drawdown > -2 ? 'green' : 'amber');
+  const monthPnl = d.monthly_pnl || 0;
+  setEl('mc-month-val', fmt(monthPnl));
+  setEl('mc-month-sub', `החודש הנוכחי`);
+  const mcMonth = document.getElementById('mc-month');
+  mcMonth.classList.remove('green','red','blue','amber');
+  mcMonth.classList.add(monthPnl >= 0 ? 'green' : 'red');
 
   setEl('mc-trades-val', st.total_trades);
   setEl('mc-trades-sub', `W: ${st.wins} / L: ${st.losses}`);
@@ -1239,16 +1384,36 @@ function renderData(d) {
       </div>`;
   }).join('');
 
-  // ── Trades table ───────────────────────────────────────────────────────
+  // ── Summary banner ─────────────────────────────────────────────────────
+  if (d.explanation) {
+    setEl('summaryText', d.explanation);
+    const icon = document.getElementById('summaryIcon');
+    if (po.active) {
+      icon.textContent = po.unrealized_pnl >= 0 ? '📈' : '📉';
+    } else {
+      icon.textContent = '⏳';
+    }
+  }
+
+  // ── Position explanation ────────────────────────────────────────────────
+  const posExpl = document.getElementById('pos-explanation');
+  if (po.active && d.explanation) {
+    posExpl.textContent = d.explanation;
+    posExpl.style.display = 'block';
+  } else {
+    posExpl.style.display = 'none';
+  }
+
+  // ── Trade table ─────────────────────────────────────────────────────────
   const tradesContent = document.getElementById('trades-content');
   if (d.trades && d.trades.length > 0) {
     tradesContent.innerHTML = `
       <table class="trades-table">
         <thead>
           <tr>
-            <th>Date</th><th>Side</th><th>Shares</th>
-            <th>Entry</th><th>Exit</th><th>P&amp;L</th>
-            <th>Result</th><th>Reason</th><th>Days</th>
+            <th>תאריך</th><th>כיוון</th>
+            <th>כניסה</th><th>יציאה</th><th>P&amp;L</th>
+            <th>תוצאה</th><th>סיבת יציאה</th><th>ימים</th>
           </tr>
         </thead>
         <tbody>
@@ -1257,12 +1422,11 @@ function renderData(d) {
             return `
               <tr>
                 <td>${t.date}</td>
-                <td><span class="side-badge ${t.side}">${t.side}</span></td>
-                <td>${t.shares.toFixed(4)}</td>
+                <td><span class="side-badge ${t.side}">${t.side === 'long' ? 'LONG ↑' : 'SHORT ↓'}</span></td>
                 <td>$${t.entry_price.toFixed(2)}</td>
                 <td>$${t.exit_price.toFixed(2)}</td>
                 <td class="pnl-cell ${win ? 'win' : 'loss'}">${fmt(t.pnl)}</td>
-                <td><span class="result-badge ${win ? 'win' : 'loss'}">${win ? '[W]' : '[L]'}</span></td>
+                <td><span class="result-badge ${win ? 'win' : 'loss'}">${win ? '✓ WIN' : '✗ LOSS'}</span></td>
                 <td style="color:var(--dim);font-size:0.65rem;">${escapeHtml(t.exit_reason)}</td>
                 <td style="color:var(--dim)">${t.holding_days}d</td>
               </tr>`;
@@ -1270,8 +1434,8 @@ function renderData(d) {
         </tbody>
       </table>`;
   } else {
-    tradesContent.innerHTML = `<div class="empty-table">NO CLOSED TRADES YET<br>
-      <span style="font-size:0.6rem;color:var(--dimmer);">Run run_trader.py daily to generate trade history</span></div>`;
+    tradesContent.innerHTML = `<div class="empty-table">אין עסקאות סגורות עדיין<br>
+      <span style="font-size:0.6rem;color:var(--dimmer);">המערכת תסחר אוטומטית כל לילה ב-23:30</span></div>`;
   }
 
   // ── Timestamp ──────────────────────────────────────────────────────────

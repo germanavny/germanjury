@@ -36,6 +36,7 @@ import numpy as np
 from portfolio import (
     load_portfolio, save_portfolio, get_equity,
     open_position, close_position, STARTING_BALANCE,
+    append_journal_entry, update_journal_outcome,
 )
 from strategy import (
     fetch_data, compute_indicators, generate_signal,
@@ -89,14 +90,14 @@ def run_day(portfolio: dict, df: pd.DataFrame, run_date: str, verbose: bool = Tr
                 should_exit = True
                 exit_reason = "Signal reversed to LONG"
 
-        # Max holding period: 15 trading days
+        # Max holding period: 8 trading days (swing trading focus)
         if not should_exit and pos["entry_date"]:
             entry_dt  = datetime.strptime(pos["entry_date"], "%Y-%m-%d")
             run_dt    = datetime.strptime(run_date, "%Y-%m-%d")
             held_days = (run_dt - entry_dt).days
-            if held_days >= 15:
+            if held_days >= 8:
                 should_exit = True
-                exit_reason = f"Max holding period (15d) reached"
+                exit_reason = f"Max holding period (8d) reached"
 
         if should_exit:
             # Determine exit price (use close, or SL/TP if triggered)
@@ -112,9 +113,12 @@ def run_day(portfolio: dict, df: pd.DataFrame, run_date: str, verbose: bool = Tr
             else:
                 exit_price = current_price
 
+            entry_date_for_journal = pos.get("entry_date")
             portfolio, day_pnl = close_position(portfolio, exit_price, exit_reason, run_date, persist=persist)
             action_taken  = f"CLOSED {pos['side'].upper()}"
             action_detail = f"Exit at ${exit_price:.2f} -- {exit_reason}  |  P&L: ${day_pnl:+.2f}"
+            if persist:
+                update_journal_outcome(entry_date_for_journal, exit_price, exit_reason, day_pnl)
 
     # ── STEP 2: LOOK FOR NEW ENTRY (only if flat) ─────────────────────────
     if not portfolio["position"]["active"] and signal_data["signal"] != "HOLD":
@@ -145,6 +149,16 @@ def run_day(portfolio: dict, df: pd.DataFrame, run_date: str, verbose: bool = Tr
                     f"SL: ${stop_loss:.2f} | TP: ${take_profit:.2f} | "
                     f"Risk: ${shares*(entry_price-stop_loss):.2f}"
                 )
+                if persist:
+                    append_journal_entry({
+                        "entry_date": run_date, "side": "long", "ticker": TICKER,
+                        "entry_price": round(entry_price, 4), "stop_loss": round(stop_loss, 2),
+                        "take_profit": round(take_profit, 2),
+                        "risk_reward": round((take_profit - entry_price) / (entry_price - stop_loss), 2),
+                        "indicators": {k: signal_data.get(k) for k in ["rsi","ma20","ma50","ma200","atr","vol_ratio","score","trend_bear"]},
+                        "label": signal_data.get("label", ""),
+                        "exit_price": None, "exit_reason": None, "pnl": None, "outcome": None,
+                    })
 
         elif signal_data["signal"] == "SHORT":
             entry_price = current_price
@@ -173,6 +187,16 @@ def run_day(portfolio: dict, df: pd.DataFrame, run_date: str, verbose: bool = Tr
                     f"SL: ${stop_loss:.2f} | TP: ${take_profit:.2f} | "
                     f"Risk: ${shares*(stop_loss-entry_price):.2f}"
                 )
+                if persist:
+                    append_journal_entry({
+                        "entry_date": run_date, "side": "short", "ticker": TICKER,
+                        "entry_price": round(entry_price, 4), "stop_loss": round(stop_loss, 2),
+                        "take_profit": round(take_profit, 2),
+                        "risk_reward": round((entry_price - take_profit) / (stop_loss - entry_price), 2),
+                        "indicators": {k: signal_data.get(k) for k in ["rsi","ma20","ma50","ma200","atr","vol_ratio","score","trend_bear"]},
+                        "label": signal_data.get("label", ""),
+                        "exit_price": None, "exit_reason": None, "pnl": None, "outcome": None,
+                    })
             else:
                 action_taken  = "SIGNAL: SHORT (no trade)"
                 action_detail = "Insufficient equity for short margin requirement"

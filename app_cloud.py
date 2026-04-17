@@ -257,12 +257,17 @@ def _build_explanation(portfolio, pos, price, sig, daily_log):
             pass
     unrl = (entry - price) * pos["shares"] if side == "short" else (price - entry) * pos["shares"]
     direction = "ירידה" if side == "short" else "עלייה"
-    action    = "מכרנו בחסר (SHORT)" if side == "short" else "קנינו (LONG)"
-    status    = "ברווח" if unrl >= 0 else "בהפסד"
+    action    = "SHORT" if side == "short" else "LONG"
+
+    if abs(unrl) < 0.01:
+        pnl_str = "פוזיציה חדשה, ממתים לתנועה"
+    else:
+        status  = "ברווח" if unrl >= 0 else "בהפסד"
+        pnl_str = f"כרגע {status} של ${unrl:+.2f}"
 
     return (
         f"{action} ב-${entry:.2f} לפני {days_in} ימים — מהמרים על {direction}. "
-        f"כרגע {status} של ${unrl:+.2f}. "
+        f"{pnl_str}. "
         f"יציאה אוטומטית: רווח ב-${tp:.2f} | הגנה ב-${sl:.2f}."
     )
 

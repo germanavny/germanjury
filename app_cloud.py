@@ -284,5 +284,34 @@ def api_refresh():
     return jsonify({"status": "cache cleared"})
 
 
+CRON_SECRET = os.environ.get("CRON_SECRET", "soloway2026")
+
+@app.route("/run-trade/<secret>")
+def run_trade_endpoint(secret):
+    if secret != CRON_SECRET:
+        return jsonify({"error": "unauthorized"}), 403
+
+    from datetime import date
+    today = date.today()
+    if today.weekday() >= 5:
+        return jsonify({"status": "skipped", "reason": "weekend"})
+
+    try:
+        _cache["fetched_at"] = None
+        portfolio = load_portfolio()
+        df = fetch_data(TICKER, period="1y")
+        from strategy import compute_indicators
+        df = compute_indicators(df)
+        run_date = today.strftime("%Y-%m-%d")
+        portfolio, day_pnl, action, detail, sig = run_day(
+            portfolio, df, run_date, verbose=False, persist=True
+        )
+        from portfolio import save_portfolio
+        save_portfolio(portfolio)
+        return jsonify({"status": "ok", "action": action, "pnl": round(day_pnl, 2), "detail": detail})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
 if __name__ == "__main__":
     app.run(debug=False, port=int(os.environ.get("PORT", 5000)), host="0.0.0.0")

@@ -744,6 +744,56 @@
     50%       { opacity: 0.6; }
   }
 
+  /* ── TRADE DIARY ─────────────────────────────────────────────────────── */
+  .diary-entry {
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    direction: rtl;
+    text-align: right;
+  }
+
+  .diary-entry.win  { border-right: 4px solid var(--green); }
+  .diary-entry.loss { border-right: 4px solid var(--red); }
+
+  .diary-num {
+    font-family: var(--font-head);
+    font-size: 1.4rem;
+    font-weight: 800;
+    color: var(--dimmer);
+    min-width: 32px;
+    text-align: center;
+  }
+
+  .diary-body { flex: 1; }
+
+  .diary-title {
+    font-family: var(--font-head);
+    font-size: 0.85rem;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+
+  .diary-title.win  { color: var(--green); }
+  .diary-title.loss { color: var(--red); }
+
+  .diary-text {
+    font-size: 0.72rem;
+    color: var(--dim);
+    line-height: 1.6;
+  }
+
+  .diary-reason {
+    font-size: 0.65rem;
+    color: var(--dimmer);
+    margin-top: 4px;
+    font-style: italic;
+  }
+
   /* ── MOBILE RESPONSIVE ───────────────────────────────────────────────── */
   /* ── DAILY SUMMARY BANNER ───────────────────────────────────────────────── */
   .summary-banner {
@@ -1085,11 +1135,11 @@
     <div id="levels-list"></div>
   </div>
 
-  <!-- TRADES TABLE -->
+  <!-- TRADE DIARY -->
   <div class="panel trades-panel fade-in stagger-5">
-    <div class="panel-title">Trade History — Last 20 Closed Trades</div>
-    <div id="trades-content">
-      <div class="empty-table">NO CLOSED TRADES YET</div>
+    <div class="panel-title">יומן עסקאות</div>
+    <div id="diary-content">
+      <div class="empty-table">אין עסקאות סגורות עדיין</div>
     </div>
   </div>
 
@@ -1404,37 +1454,36 @@ function renderData(d) {
     posExpl.style.display = 'none';
   }
 
-  // ── Trade table ─────────────────────────────────────────────────────────
-  const tradesContent = document.getElementById('trades-content');
+  // ── Trade diary ──────────────────────────────────────────────────────────
+  const diaryContent = document.getElementById('diary-content');
   if (d.trades && d.trades.length > 0) {
-    tradesContent.innerHTML = `
-      <table class="trades-table">
-        <thead>
-          <tr>
-            <th>תאריך</th><th>כיוון</th>
-            <th>כניסה</th><th>יציאה</th><th>P&amp;L</th>
-            <th>תוצאה</th><th>סיבת יציאה</th><th>ימים</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${d.trades.map(t => {
-            const win = t.pnl >= 0;
-            return `
-              <tr>
-                <td>${t.date}</td>
-                <td><span class="side-badge ${t.side}">${t.side === 'long' ? 'LONG ↑' : 'SHORT ↓'}</span></td>
-                <td>$${t.entry_price.toFixed(2)}</td>
-                <td>$${t.exit_price.toFixed(2)}</td>
-                <td class="pnl-cell ${win ? 'win' : 'loss'}">${fmt(t.pnl)}</td>
-                <td><span class="result-badge ${win ? 'win' : 'loss'}">${win ? '✓ WIN' : '✗ LOSS'}</span></td>
-                <td style="color:var(--dim);font-size:0.65rem;">${escapeHtml(t.exit_reason)}</td>
-                <td style="color:var(--dim)">${t.holding_days}d</td>
-              </tr>`;
-          }).join('')}
-        </tbody>
-      </table>`;
+    diaryContent.innerHTML = d.trades.map((t, i) => {
+      const win      = t.pnl >= 0;
+      const cls      = win ? 'win' : 'loss';
+      const result   = win ? `רווח של $${Math.abs(t.pnl).toFixed(2)}` : `הפסד של $${Math.abs(t.pnl).toFixed(2)}`;
+      const dir      = t.side === 'long' ? 'LONG (הימור על עלייה)' : 'SHORT (הימור על ירידה)';
+      const icon     = win ? '✓' : '✗';
+      const num      = d.trades.length - i;
+      const reasonHe = t.exit_reason.includes('STOP LOSS')    ? 'Stop Loss נפגע — יצאנו להגן על ההון'
+                     : t.exit_reason.includes('TAKE PROFIT')  ? 'הגענו ליעד הרווח'
+                     : t.exit_reason.includes('reversed')     ? 'הסיגנל התהפך — יצאנו'
+                     : t.exit_reason.includes('8d')           ? '8 ימים חלפו — יצאנו לפי חוק הזמן'
+                     : escapeHtml(t.exit_reason);
+      return `
+        <div class="diary-entry ${cls}">
+          <div class="diary-num">#${num}</div>
+          <div class="diary-body">
+            <div class="diary-title ${cls}">${icon} עסקה #${num} — ${result}</div>
+            <div class="diary-text">
+              ${t.date} &nbsp;|&nbsp; ${dir}<br>
+              נכנסנו ב-<strong>$${t.entry_price.toFixed(2)}</strong> &nbsp;→&nbsp; יצאנו ב-<strong>$${t.exit_price.toFixed(2)}</strong> &nbsp;|&nbsp; ${t.holding_days} ימים
+            </div>
+            <div class="diary-reason">${reasonHe}</div>
+          </div>
+        </div>`;
+    }).join('');
   } else {
-    tradesContent.innerHTML = `<div class="empty-table">אין עסקאות סגורות עדיין<br>
+    diaryContent.innerHTML = `<div class="empty-table">אין עסקאות סגורות עדיין<br>
       <span style="font-size:0.6rem;color:var(--dimmer);">המערכת תסחר אוטומטית כל לילה ב-23:30</span></div>`;
   }
 

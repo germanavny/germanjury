@@ -4,6 +4,7 @@ __pycache__/
 *.parquet
 portfolio.json
 trade_log.json
+journal.json
 reports/
 *.log
 .env

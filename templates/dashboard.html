@@ -511,7 +511,7 @@
     <div class="metric-card fade-in stagger-1" id="mc-equity">
       <div class="metric-label">Account Equity</div>
       <div class="metric-value" id="mc-equity-val">—</div>
-      <div class="metric-sub">Started $1,000.00</div>
+      <div class="metric-sub" id="mc-equity-start">Started —</div>
     </div>
     <div class="metric-card fade-in stagger-2" id="mc-pnl">
       <div class="metric-label">Total Net P&amp;L</div>
@@ -838,6 +838,7 @@ function renderData(d) {
 
   // Metric cards
   setEl('mc-equity-val', fmtDol(ac.equity));
+  setEl('mc-equity-start', `Started ${fmtDol(ac.starting)}`);
   const mcE = document.getElementById('mc-equity');
   mcE.classList.remove('green','red','blue','amber');
   mcE.classList.add(ac.total_pnl>=0?'green':'red');
@@ -869,7 +870,7 @@ function renderData(d) {
   if (d.eq_curve?.length) {
     equityChart.data.labels           = d.eq_curve.map(p => p.date.slice(5));
     equityChart.data.datasets[0].data = d.eq_curve.map(p => p.equity);
-    equityChart.data.datasets[1].data = d.eq_curve.map(() => 1000);
+    equityChart.data.datasets[1].data = d.eq_curve.map(() => ac.starting);
     equityChart.update('active');
   }
 

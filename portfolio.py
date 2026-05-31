@@ -1,5 +1,5 @@
 """
-Portfolio State Manager
+Portfolio State Manager — Multi-Ticker Version
 Persists all account state to JSON so data survives between daily runs.
 """
 
@@ -12,15 +12,34 @@ PORTFOLIO_FILE = os.path.join(os.path.dirname(__file__), "portfolio.json")
 TRADE_LOG_FILE = os.path.join(os.path.dirname(__file__), "trade_log.json")
 JOURNAL_FILE   = os.path.join(os.path.dirname(__file__), "journal.json")
 
-STARTING_BALANCE = 1000.00
+STARTING_BALANCE = 10_000.00
+COMMISSION       = 2.50    # USD per side (open or close)
+TICKERS          = ["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"]
+MAX_POSITIONS    = len(TICKERS)
 
 
 def load_portfolio() -> dict:
-    """Load portfolio from disk. If first run, create fresh $1,000 account."""
+    """Load portfolio from disk. Migrates from old single-position format automatically."""
     if not os.path.exists(PORTFOLIO_FILE):
         return _new_portfolio()
     with open(PORTFOLIO_FILE, "r") as f:
-        return json.load(f)
+        p = json.load(f)
+
+    # Migrate from old single-position format
+    if "position" in p and "positions" not in p:
+        old_pos = p.pop("position")
+        p["positions"] = {t: _flat_position() for t in TICKERS}
+        if old_pos.get("active"):
+            ticker = old_pos.get("ticker", "MSFT")
+            if ticker in p["positions"]:
+                p["positions"][ticker] = old_pos
+        p.setdefault("total_commissions", 0.0)
+
+    # Ensure all current tickers are present
+    for t in TICKERS:
+        p["positions"].setdefault(t, _flat_position())
+
+    return p
 
 
 def save_portfolio(p: dict) -> None:
@@ -44,52 +63,47 @@ def append_trade(trade: dict) -> None:
 
 def _new_portfolio() -> dict:
     return {
-        "created":          datetime.now().strftime("%Y-%m-%d"),
-        "starting_balance": STARTING_BALANCE,
-        "cash":             STARTING_BALANCE,
-        "position": {
-            "active":       False,
-            "side":         None,        # "long" or "short"
-            "ticker":       None,
-            "shares":       0.0,
-            "entry_price":  0.0,
-            "entry_date":   None,
-            "stop_loss":    0.0,
-            "take_profit":  0.0,
-            "signal_label": None,
-        },
-        "total_trades":     0,
-        "winning_trades":   0,
-        "losing_trades":    0,
-        "total_pnl":        0.0,
-        "peak_equity":      STARTING_BALANCE,
-        "last_run_date":    None,
-        "daily_log":        [],          # list of {date, equity, action, pnl}
+        "created":           datetime.now().strftime("%Y-%m-%d"),
+        "starting_balance":  STARTING_BALANCE,
+        "cash":              STARTING_BALANCE,
+        "positions":         {t: _flat_position() for t in TICKERS},
+        "total_trades":      0,
+        "winning_trades":    0,
+        "losing_trades":     0,
+        "total_pnl":         0.0,
+        "total_commissions": 0.0,
+        "peak_equity":       STARTING_BALANCE,
+        "last_run_date":     None,
+        "daily_log":         [],
     }
 
 
-def get_equity(p: dict, current_price: float) -> float:
-    """Calculate total equity (cash + open position mark-to-market).
-
-    LONG  equity = cash + shares * current_price
-    SHORT equity = cash + (entry - current) * shares  [only P&L, no notional]
+def get_equity(p: dict, prices) -> float:
     """
-    if not p["position"]["active"]:
-        return p["cash"]
-    pos    = p["position"]
-    shares = pos["shares"]
-    entry  = pos["entry_price"]
-    if pos["side"] == "long":
-        return p["cash"] + shares * current_price
-    else:  # short: only unrealized P&L flows; no notional added
-        unrealized = (entry - current_price) * shares
-        return p["cash"] + unrealized
+    Calculate total equity across all positions.
+    prices: dict {ticker: price}  OR  float (backward compat = MSFT price).
+    """
+    if isinstance(prices, (int, float)):
+        prices = {"MSFT": float(prices)}
+
+    total = p["cash"]
+    for ticker, pos in p.get("positions", {}).items():
+        if not pos or not pos.get("active"):
+            continue
+        price  = prices.get(ticker, pos.get("entry_price", 0))
+        shares = pos["shares"]
+        entry  = pos["entry_price"]
+        if pos["side"] == "long":
+            total += shares * price
+        else:
+            total += (entry - price) * shares
+    return total
 
 
 def open_position(
     p: dict,
-    side: str,
     ticker: str,
+    side: str,
     shares: float,
     entry_price: float,
     stop_loss: float,
@@ -97,15 +111,13 @@ def open_position(
     signal_label: str,
     date: str,
 ) -> dict:
-    """Open a new position.
-    LONG:  debit cash immediately.
-    SHORT: cash unchanged (notional is NOT credited — avoids runaway compounding).
-           Only realized P&L will be credited/debited on close.
-    """
+    """Open a new position. Deducts entry commission from cash."""
     if side == "long":
         p["cash"] -= shares * entry_price
-    # short: no cash change on open
-    p["position"] = {
+    p["cash"]              -= COMMISSION
+    p["total_commissions"]  = p.get("total_commissions", 0.0) + COMMISSION
+
+    p["positions"][ticker] = {
         "active":       True,
         "side":         side,
         "ticker":       ticker,
@@ -121,48 +133,56 @@ def open_position(
 
 def close_position(
     p: dict,
+    ticker: str,
     exit_price: float,
     exit_reason: str,
     date: str,
-    persist: bool = True,   # set False in backtest to avoid writing to trade log
+    persist: bool = True,
 ) -> tuple[dict, float]:
-    """Close open position. Returns updated portfolio and realized P&L."""
-    pos = p["position"]
+    """Close open position. Returns (portfolio, net_pnl_after_all_commissions)."""
+    pos    = p["positions"][ticker]
     shares = pos["shares"]
     entry  = pos["entry_price"]
     side   = pos["side"]
 
     if side == "long":
-        pnl = (exit_price - entry) * shares
-        p["cash"] += shares * exit_price   # get back sale proceeds
-    else:  # short: only P&L hits cash (no notional was credited on open)
-        pnl = (entry - exit_price) * shares
-        p["cash"] += pnl
+        gross_pnl = (exit_price - entry) * shares
+        p["cash"] += shares * exit_price
+    else:
+        gross_pnl = (entry - exit_price) * shares
+        p["cash"] += gross_pnl
 
-    p["total_pnl"]   += pnl
+    p["cash"]              -= COMMISSION
+    p["total_commissions"]  = p.get("total_commissions", 0.0) + COMMISSION
+
+    # Net P&L = gross movement minus BOTH commissions (entry was cash-deducted on open)
+    net_pnl = gross_pnl - (COMMISSION * 2)
+
+    p["total_pnl"]   += net_pnl
     p["total_trades"] += 1
-    if pnl >= 0:
+    if net_pnl >= 0:
         p["winning_trades"] += 1
     else:
         p["losing_trades"] += 1
 
-    trade_record = {
-        "date":         date,
-        "ticker":       pos["ticker"],
-        "side":         side,
-        "shares":       round(shares, 4),
-        "entry_price":  round(entry, 4),
-        "exit_price":   round(exit_price, 4),
-        "exit_reason":  exit_reason,
-        "pnl":          round(pnl, 4),
-        "signal":       pos["signal_label"],
-        "holding_days": _holding_days(pos["entry_date"], date),
-    }
     if persist:
-        append_trade(trade_record)
+        append_trade({
+            "date":         date,
+            "ticker":       ticker,
+            "side":         side,
+            "shares":       round(shares, 4),
+            "entry_price":  round(entry, 4),
+            "exit_price":   round(exit_price, 4),
+            "exit_reason":  exit_reason,
+            "gross_pnl":    round(gross_pnl, 4),
+            "commission":   round(COMMISSION * 2, 4),
+            "pnl":          round(net_pnl, 4),
+            "signal":       pos["signal_label"],
+            "holding_days": _holding_days(pos["entry_date"], date),
+        })
 
-    p["position"] = _flat_position()
-    return p, pnl
+    p["positions"][ticker] = _flat_position()
+    return p, net_pnl
 
 
 def _flat_position() -> dict:
@@ -196,18 +216,18 @@ def load_journal() -> list:
 
 
 def append_journal_entry(entry: dict) -> None:
-    """Called when a position opens. Records entry conditions for learning."""
     journal = load_journal()
     journal.append(entry)
     with open(JOURNAL_FILE, "w") as f:
         json.dump(journal, f, indent=2)
 
 
-def update_journal_outcome(entry_date: str, exit_price: float, exit_reason: str, pnl: float) -> None:
-    """Called when a position closes. Updates the journal entry with the result."""
+def update_journal_outcome(ticker: str, entry_date: str, exit_price: float, exit_reason: str, pnl: float) -> None:
     journal = load_journal()
     for entry in journal:
-        if entry.get("entry_date") == entry_date and entry.get("outcome") is None:
+        if (entry.get("entry_date") == entry_date
+                and entry.get("ticker") == ticker
+                and entry.get("outcome") is None):
             entry["exit_price"]  = round(exit_price, 4)
             entry["exit_reason"] = exit_reason
             entry["pnl"]         = round(pnl, 4)

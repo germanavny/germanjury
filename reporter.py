@@ -1,26 +1,15 @@
 """
-Daily Report Generator
-Produces the end-of-day P&L report that the user sees each trading day.
+Daily Report Generator — Multi-Ticker Version
 """
 
 import os
 from datetime import datetime
-from portfolio import get_equity, load_trade_log, STARTING_BALANCE
+from portfolio import get_equity, load_trade_log, STARTING_BALANCE, TICKERS
 
 REPORT_DIR = os.path.join(os.path.dirname(__file__), "reports")
 
 
-def _bar(value: float, max_val: float = 10.0, width: int = 30, positive_char="=", negative_char="-") -> str:
-    if max_val == 0:
-        return ""
-    ratio = min(abs(value) / max_val, 1.0)
-    filled = int(ratio * width)
-    char   = positive_char if value >= 0 else negative_char
-    return char * filled + " " * (width - filled)
-
-
-def _pnl_color(pnl: float) -> str:
-    """Return +/- emoji based on P&L."""
+def _pnl_tag(pnl: float) -> str:
     if pnl > 0:   return "  [PROFIT]"
     elif pnl < 0: return "  [LOSS]"
     else:          return "  [FLAT]"
@@ -28,167 +17,172 @@ def _pnl_color(pnl: float) -> str:
 
 def generate_daily_report(
     portfolio: dict,
-    signal_data: dict,
-    action_taken: str,
-    action_detail: str,
-    day_pnl: float,
-    current_price: float,
-    ticker: str = "MSFT",
+    results: dict,
+    prices: dict,
+    market: dict | None = None,
 ) -> str:
-    """Build and print the full daily report. Also saves to file."""
-
+    """
+    Build and print the full daily report. Also saves to file.
+    results = {ticker: {"pnl": ..., "action": ..., "detail": ..., "signal": sig_dict}}
+    prices  = {ticker: current_price}
+    market  = optional regime dict from strategy.get_market_regime()
+    """
     today_str  = datetime.now().strftime("%Y-%m-%d %H:%M")
     today_date = datetime.now().strftime("%Y-%m-%d")
 
-    equity     = get_equity(portfolio, current_price)
+    equity     = get_equity(portfolio, prices)
     total_pnl  = equity - STARTING_BALANCE
     pnl_pct    = (total_pnl / STARTING_BALANCE) * 100
     peak_eq    = max(portfolio.get("peak_equity", STARTING_BALANCE), equity)
     drawdown   = ((equity - peak_eq) / peak_eq) * 100 if peak_eq > 0 else 0
+    total_comm = portfolio.get("total_commissions", 0.0)
 
-    total_trades  = portfolio.get("total_trades", 0)
-    winning       = portfolio.get("winning_trades", 0)
-    losing        = portfolio.get("losing_trades", 0)
-    win_rate      = (winning / total_trades * 100) if total_trades > 0 else 0
-
-    pos           = portfolio.get("position", {})
-    has_position  = pos.get("active", False)
+    total_trades = portfolio.get("total_trades", 0)
+    winning      = portfolio.get("winning_trades", 0)
+    losing       = portfolio.get("losing_trades", 0)
+    win_rate     = (winning / total_trades * 100) if total_trades > 0 else 0
 
     lines = []
-    SEP  = "=" * 65
-    sep2 = "-" * 65
+    SEP   = "=" * 70
+    sep2  = "-" * 70
 
-    # ── HEADER ────────────────────────────────────────────────────────────
+    # ── HEADER ────────────────────────────────────────────────────────────────
     lines += [
         "",
         SEP,
-        f"  MSFT PAPER TRADER  //  Daily Report",
+        f"  SOLOWAY MULTI-TICKER PAPER TRADER  //  Daily Report",
         f"  {today_str}",
         SEP,
         "",
     ]
 
-    # ── ACCOUNT SUMMARY ───────────────────────────────────────────────────
+    # ── ACCOUNT SUMMARY ───────────────────────────────────────────────────────
     lines += [
         "  ACCOUNT SNAPSHOT",
         sep2,
-        f"  Starting Capital : ${STARTING_BALANCE:>10,.2f}",
-        f"  Current Equity   : ${equity:>10,.2f}  {_pnl_color(total_pnl)}",
-        f"  Total P&L        : ${total_pnl:>+10,.2f}  ({pnl_pct:>+.2f}%)",
-        f"  Cash Available   : ${portfolio['cash']:>10,.2f}",
-        f"  Peak Equity      : ${peak_eq:>10,.2f}",
-        f"  Drawdown         : {drawdown:>+.2f}%",
+        f"  Starting Capital  : ${STARTING_BALANCE:>10,.2f}",
+        f"  Current Equity    : ${equity:>10,.2f}  {_pnl_tag(total_pnl)}",
+        f"  Total Net P&L     : ${total_pnl:>+10,.2f}  ({pnl_pct:>+.2f}%)",
+        f"  Cash Available    : ${portfolio['cash']:>10,.2f}",
+        f"  Peak Equity       : ${peak_eq:>10,.2f}",
+        f"  Drawdown          : {drawdown:>+.2f}%",
+        f"  Total Commissions : ${total_comm:>10,.2f}  (${total_comm/max(total_trades,1):.2f}/trade avg)",
         "",
     ]
 
-    # ── TODAY'S ACTIVITY ─────────────────────────────────────────────────
-    lines += [
-        "  TODAY'S ACTIVITY",
-        sep2,
-        f"  {ticker} Close Price : ${current_price:.2f}",
-        f"  Action Taken     : {action_taken}",
-        f"  Detail           : {action_detail}",
-        f"  Day P&L          : ${day_pnl:>+.2f}{_pnl_color(day_pnl)}",
-        "",
-    ]
-
-    # ── OPEN POSITION ─────────────────────────────────────────────────────
-    if has_position:
-        side     = pos["side"].upper()
-        shares   = pos["shares"]
-        entry    = pos["entry_price"]
-        sl       = pos["stop_loss"]
-        tp       = pos["take_profit"]
-        entry_dt = pos["entry_date"]
-        signal   = pos["signal_label"]
-
-        if pos["side"] == "long":
-            unrl_pnl = (current_price - entry) * shares
-            unrl_pct = (current_price - entry) / entry * 100
-        else:
-            unrl_pnl = (entry - current_price) * shares
-            unrl_pct = (entry - current_price) / entry * 100
-
+    # ── MARKET REGIME ─────────────────────────────────────────────────────────
+    if market:
         lines += [
-            f"  OPEN POSITION  [{side}]",
+            "  MARKET REGIME (QQQ-gated)",
             sep2,
-            f"  Signal         : {signal}",
-            f"  Entry Date     : {entry_dt}",
-            f"  Entry Price    : ${entry:.2f}",
-            f"  Shares         : {shares:.4f}",
-            f"  Stop Loss      : ${sl:.2f}  ({(sl/entry-1)*100:>+.1f}%)",
-            f"  Take Profit    : ${tp:.2f}  ({(tp/entry-1)*100:>+.1f}%)",
-            f"  Unrealized P&L : ${unrl_pnl:>+.2f}  ({unrl_pct:>+.2f}%)",
-            "",
-        ]
-    else:
-        lines += [
-            "  OPEN POSITION  [NONE - Cash]",
-            sep2,
-            "  No active trade. Waiting for setup.",
+            f"  {market.get('label', 'n/a')}",
+            f"  QQQ: ${market.get('qqq_price', 0):.2f}",
             "",
         ]
 
-    # ── MARKET SIGNALS ────────────────────────────────────────────────────
-    sig = signal_data
-    lines += [
-        "  SOLOWAY SIGNAL DASHBOARD",
-        sep2,
-        f"  Signal     : {sig.get('signal', 'N/A')}  (Score: {sig.get('score', 0):+.1f})",
-        f"  Label      : {sig.get('label', '')}",
-        f"  RSI(14)    : {sig.get('rsi', 0):.1f}{'  OVERSOLD' if sig.get('rsi',50) < 35 else '  OVERBOUGHT' if sig.get('rsi',50) > 65 else ''}",
-        f"  Vol Ratio  : {sig.get('vol_ratio', 1):.2f}x  {'** HIGH VOL **' if sig.get('vol_ratio',1) > 2 else ''}",
-        f"  MA20       : ${sig.get('ma20', 0):.2f}  ({'ABOVE' if current_price > sig.get('ma20',0) else 'BELOW'})",
-        f"  MA50       : ${sig.get('ma50', 0):.2f}  ({'ABOVE' if current_price > sig.get('ma50',0) else 'BELOW'})",
-        f"  MA200      : ${sig.get('ma200', 0):.2f}  ({'ABOVE' if current_price > sig.get('ma200',0) else 'BELOW'})",
-        f"  Regime     : {'DEATH CROSS (Bearish)' if sig.get('trend_bear') else 'GOLDEN CROSS (Bullish)'}",
-        f"  Fib 61.8%  : ${sig.get('fib618', 0):.2f}",
-        f"  Fib 50.0%  : ${sig.get('fib50', 0):.2f}",
-        f"  Fib 38.2%  : ${sig.get('fib382', 0):.2f}",
-        "",
-        "  Signal Notes:",
-    ]
-    for note in sig.get("notes", []):
-        lines.append(f"    * {note}")
+    # ── PER-TICKER SUMMARY ────────────────────────────────────────────────────
+    lines += ["  TODAY'S TICKER ACTIVITY", sep2]
+    for ticker in TICKERS:
+        res   = results.get(ticker, {})
+        price = prices.get(ticker, 0)
+        sig   = res.get("signal", {})
+        pos   = portfolio.get("positions", {}).get(ticker, {})
+
+        signal_str = sig.get("signal", "—") if sig else "—"
+        score_str  = f"score {sig.get('score', 0):+.1f}" if sig else ""
+        action     = res.get("action", "HOLD")
+
+        # trend + news context
+        trend_str = ""
+        if sig:
+            if sig.get("uptrend"):     trend_str = " UP↑"
+            elif sig.get("downtrend"): trend_str = " DN↓"
+        news = sig.get("news") if sig else None
+        news_str = ""
+        if news and news.get("flags"):
+            news_str = f"  news:{news.get('sentiment',0):+.2f}{'/' + ','.join(news['flags'][:2]) if news.get('flags') else ''}"
+
+        pos_str = ""
+        if pos.get("active"):
+            side   = pos["side"].upper()
+            entry  = pos["entry_price"]
+            shares = pos["shares"]
+            if pos["side"] == "long":
+                unrl = (price - entry) * shares
+            else:
+                unrl = (entry - price) * shares
+            pos_str = f"  [{side} @ ${entry:.2f}, unrl: ${unrl:+.2f}]"
+
+        lines.append(f"  {ticker:<6} ${price:>8.2f}  {signal_str:>6}{trend_str:<4} ({score_str:<12})  {action}{pos_str}{news_str}")
 
     lines.append("")
 
-    # ── TRADE STATISTICS ─────────────────────────────────────────────────
+    # ── OPEN POSITIONS DETAIL ─────────────────────────────────────────────────
+    active_positions = {t: p for t, p in portfolio.get("positions", {}).items() if p.get("active")}
+    if active_positions:
+        lines += ["  OPEN POSITIONS DETAIL", sep2]
+        for ticker, pos in active_positions.items():
+            price  = prices.get(ticker, pos["entry_price"])
+            side   = pos["side"]
+            entry  = pos["entry_price"]
+            shares = pos["shares"]
+            sl     = pos["stop_loss"]
+            tp     = pos["take_profit"]
+            if side == "long":
+                unrl = (price - entry) * shares
+                unrl_pct = (price - entry) / entry * 100
+            else:
+                unrl = (entry - price) * shares
+                unrl_pct = (entry - price) / entry * 100
+
+            tp_str = f"${tp:.2f}" if tp else "ride trend (trail)"
+            lines += [
+                f"  {ticker} [{side.upper()}]  Entry: ${entry:.2f}  Shares: {shares:.4f}",
+                f"    Current: ${price:.2f}  Unrealized: ${unrl:+.2f} ({unrl_pct:+.2f}%)",
+                f"    Stop Loss: ${sl:.2f}  Take Profit: {tp_str}  Entry Date: {pos['entry_date']}",
+                "",
+            ]
+    else:
+        lines += ["  OPEN POSITIONS: NONE — Cash only", sep2, ""]
+
+    # ── TRADE STATISTICS ──────────────────────────────────────────────────────
     lines += [
         "  TRADE STATISTICS",
         sep2,
-        f"  Total Trades : {total_trades}",
-        f"  Wins         : {winning}",
-        f"  Losses       : {losing}",
-        f"  Win Rate     : {win_rate:.1f}%",
+        f"  Total Trades  : {total_trades}",
+        f"  Wins          : {winning}",
+        f"  Losses        : {losing}",
+        f"  Win Rate      : {win_rate:.1f}%",
+        f"  Commissions   : ${total_comm:.2f} paid",
         "",
     ]
 
-    # ── RECENT TRADE HISTORY ─────────────────────────────────────────────
+    # ── RECENT CLOSED TRADES ──────────────────────────────────────────────────
     trade_log = load_trade_log()
     if trade_log:
         lines += ["  RECENT CLOSED TRADES (last 10)", sep2]
-        header = f"  {'Date':<12} {'Side':<6} {'Shares':>8} {'Entry':>8} {'Exit':>8} {'P&L':>9} {'Reason'}"
+        header = f"  {'Date':<12} {'Ticker':<6} {'Side':<6} {'Shares':>6} {'Entry':>8} {'Exit':>8} {'Gross':>8} {'Comm':>6} {'Net P&L':>8} {'Reason'}"
         lines.append(header)
-        lines.append(f"  {'-'*63}")
+        lines.append(f"  {'-'*80}")
         for t in trade_log[-10:]:
-            pnl_str  = f"${t['pnl']:>+.2f}"
             flag     = "[W]" if t["pnl"] >= 0 else "[L]"
+            gross    = t.get("gross_pnl", t["pnl"])
+            comm_str = f"${t.get('commission', 5.0):.2f}"
             line = (
-                f"  {t['date']:<12} {t['side']:<6} {t['shares']:>8.3f} "
+                f"  {t['date']:<12} {t.get('ticker','MSFT'):<6} {t['side']:<6} {t['shares']:>6.3f} "
                 f"${t['entry_price']:>7.2f} ${t['exit_price']:>7.2f} "
-                f"{pnl_str:>9}  {flag} {t['exit_reason'][:25]}"
+                f"${gross:>+7.2f} {comm_str:>6} ${t['pnl']:>+7.2f}  {flag} {t['exit_reason'][:20]}"
             )
             lines.append(line)
         lines.append("")
 
-    # ── EQUITY CURVE (ASCII) ─────────────────────────────────────────────
+    # ── EQUITY CURVE (ASCII) ──────────────────────────────────────────────────
     daily_log = portfolio.get("daily_log", [])
     if len(daily_log) >= 3:
         lines += ["  EQUITY CURVE (last 20 sessions)", sep2]
         recent_log = daily_log[-20:]
         equities   = [d["equity"] for d in recent_log]
-        dates      = [d["date"][-5:] for d in recent_log]   # MM-DD
+        dates      = [d["date"][-5:] for d in recent_log]
         min_eq     = min(equities)
         max_eq     = max(equities)
         eq_range   = max_eq - min_eq if max_eq > min_eq else 1
@@ -200,7 +194,7 @@ def generate_daily_report(
             row_line  = "  "
             for eq in equities:
                 row_line += "#" if eq >= threshold else " "
-            label_val = min_eq + (row / height) * eq_range
+            label_val  = min_eq + (row / height) * eq_range
             row_line  += f"  ${label_val:.0f}"
             chart.append(row_line)
 
@@ -208,36 +202,19 @@ def generate_daily_report(
         lines += chart
         lines.append("")
 
-    # ── MASTER LEVELS CHEAT SHEET ────────────────────────────────────────
-    lines += [
-        "  MASTER LEVELS CHEAT SHEET (vs current ${:.2f})".format(current_price),
-        sep2,
-        "  SUPPORT:",
-        "    $339-$345  [MASTER] Double Fib Confluence -- PRIMARY TARGET",
-        "    $365-$376  Current area (50% Fib from ATH)",
-        "    $309-$320  78.6% Fib from ATH (capitulation)",
-        "  RESISTANCE:",
-        "    $390-$405  MA50 + 38.2% Fib from ATH",
-        "    $428-$442  2024 resistance cluster",
-        "    $458-$480  Pre-ATH distribution zone",
-        "",
-    ]
-
-    # ── FOOTER ────────────────────────────────────────────────────────────
+    # ── FOOTER ────────────────────────────────────────────────────────────────
     lines += [
         SEP,
         "  Soloway Rule: 'Patience. Let price come to your level.'",
+        f"  Commission impact: ${5.0:.2f}/trade round-trip. Quality entries only.",
         "  This is a PAPER TRADING simulation. Not financial advice.",
         SEP,
         "",
     ]
 
     report_text = "\n".join(lines)
-
-    # Print to console
     print(report_text)
 
-    # Save to file
     os.makedirs(REPORT_DIR, exist_ok=True)
     report_path = os.path.join(REPORT_DIR, f"report_{today_date}.txt")
     with open(report_path, "w", encoding="utf-8") as f:

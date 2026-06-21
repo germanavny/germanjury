@@ -36,7 +36,7 @@ from portfolio import (
 from strategy import (
     fetch_data, compute_indicators, generate_signal,
     size_position, check_exit, get_market_regime,
-    ATR_STOP_MULT, TRAIL_STOP_PCT, MAX_HOLD_DAYS,
+    ATR_STOP_MULT, TRAIL_STOP_PCT, MAX_HOLD_DAYS, COOLDOWN_DAYS,
     STOP_LOSS_PCT_LONG, STOP_LOSS_PCT_SHORT,
     TP_LONG_1, TP_SHORT_1,
 )
@@ -132,6 +132,9 @@ def run_day(
 
             entry_date_for_journal = pos.get("entry_date")
             portfolio, day_pnl = close_position(portfolio, ticker, exit_price, exit_reason, run_date, persist=persist)
+            # Record stop-outs so we can enforce the re-entry cooldown (anti-whipsaw)
+            if "STOP LOSS" in exit_reason or "TRAILING" in exit_reason:
+                portfolio.setdefault("last_stop", {})[ticker] = run_date
             action_taken  = f"CLOSED {pos['side'].upper()} {ticker}"
             action_detail = f"{ticker}: Exit at ${exit_price:.2f} — {exit_reason} | P&L: ${day_pnl:+.2f} (after $5 commission)"
             if persist:
@@ -150,6 +153,18 @@ def run_day(
             return portfolio, day_pnl, action_taken, action_detail, signal_data
 
     if not portfolio["positions"][ticker].get("active") and signal_data["signal"] != "HOLD":
+        # ── COOLDOWN GATE — don't re-enter a name that just stopped us out ─────
+        last_stop = portfolio.get("last_stop", {}).get(ticker)
+        if last_stop:
+            days_since_stop = (datetime.strptime(run_date, "%Y-%m-%d")
+                               - datetime.strptime(last_stop, "%Y-%m-%d")).days
+            if days_since_stop < COOLDOWN_DAYS:
+                signal_data["signal"] = "HOLD"
+                action_taken  = "COOLDOWN"
+                action_detail = (f"{ticker}: entry blocked — cooldown "
+                                 f"{days_since_stop}/{COOLDOWN_DAYS}d since last stop-out")
+                return portfolio, day_pnl, action_taken, action_detail, signal_data
+
         # ── NEWS / CATALYST GATE (advisory) — block entries against hard catalysts ──
         try:
             from news import get_news_sentiment, news_gate

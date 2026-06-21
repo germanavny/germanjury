@@ -45,6 +45,14 @@ TRAIL_STOP_PCT      = 0.06    # Wide 6% trailing stop — let winners run, don't
 MAX_HOLD_DAYS       = 40      # Swing horizon: ride the trend up to 40 days
 ENTRY_THRESHOLD     = 4.0     # |score| needed to trigger an entry
 
+# ── ANTI-WHIPSAW: cooldown after a stop-out (validated 2026-06, test_filters.py) ──
+# After a ticker stops us out, don't re-enter it for COOLDOWN_DAYS. A name just
+# chopped out in a sideways tape tends to keep chopping. 20y long-only portfolio sim:
+# baseline PF 1.80 / CAGR 10.8% / MaxDD -15%  →  cd=7  PF 2.05 / CAGR 11.1% / MaxDD -13%.
+# Strict improvement on return AND risk AND commissions. (ADX gate was TESTED & REJECTED:
+# it halved CAGR — pullback entries inherently have low ADX, so it killed good trades.)
+COOLDOWN_DAYS       = 7
+
 # LONG-ONLY: portfolio backtest (2006-2026) proved shorts are a net DRAG on these
 # mega-cap tech names — even with the regime gate. Removing shorts: CAGR 7.7%→11.0%,
 # MaxDD -26%→-15%, PF 1.45→1.86. Shorts disabled by default. See portfolio_backtest.py.
@@ -89,6 +97,17 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     low_close  = (df["Low"]  - df["Close"].shift()).abs()
     tr  = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["ATR14"] = tr.rolling(14).mean()
+
+    # ── ADX(14) — trend-strength filter (kills choppy-market whipsaw entries) ──
+    up_move   = df["High"].diff()
+    down_move = -df["Low"].diff()
+    plus_dm   = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm  = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    atr_w     = tr.ewm(alpha=1/14, adjust=False).mean()
+    plus_di   = 100 * pd.Series(plus_dm,  index=df.index).ewm(alpha=1/14, adjust=False).mean() / atr_w
+    minus_di  = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1/14, adjust=False).mean() / atr_w
+    dx        = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    df["ADX14"] = dx.ewm(alpha=1/14, adjust=False).mean()
 
     df["BB_mid"]   = df["MA20"]
     df["BB_std"]   = df["Close"].rolling(20).std()

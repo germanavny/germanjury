@@ -21,7 +21,7 @@ import yfinance as yf
 
 from strategy import (
     compute_indicators, generate_signal,
-    ATR_STOP_MULT, TRAIL_STOP_PCT, MAX_HOLD_DAYS,
+    ATR_STOP_MULT, TRAIL_STOP_PCT, MAX_HOLD_DAYS, COOLDOWN_DAYS,
 )
 
 START_EQUITY   = 10_000.0
@@ -72,6 +72,7 @@ def run_portfolio(tickers, rs_top=None, max_positions=None, start=None, long_onl
     trades = []
     equity_curve = []
     dates_curve = []
+    last_stop = {}                # ticker -> date last stopped out (re-entry cooldown)
 
     def mkt(d):
         if d in regime.index:
@@ -119,6 +120,8 @@ def run_portfolio(tickers, rs_top=None, max_positions=None, start=None, long_onl
                 net = gross - COMMISSION_RT
                 cash += net + (p["entry"] * p["shares"] if p["side"] == "long" else 0)
                 trades.append({"ticker": tk, "side": p["side"], "pnl": net, "reason": reason, "days": held})
+                if reason == "stop":
+                    last_stop[tk] = d
                 del positions[tk]
 
         # ---- look for entries ----
@@ -130,6 +133,8 @@ def run_portfolio(tickers, rs_top=None, max_positions=None, start=None, long_onl
                     continue
                 loc = df.index.get_loc(d)
                 if loc < 200:
+                    continue
+                if COOLDOWN_DAYS and tk in last_stop and (d - last_stop[tk]).days < COOLDOWN_DAYS:
                     continue
                 sig = generate_signal(df.iloc[: loc + 1], tk, market=market)
                 allowed = ("LONG",) if long_only else ("LONG", "SHORT")

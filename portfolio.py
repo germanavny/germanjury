@@ -14,8 +14,17 @@ JOURNAL_FILE   = os.path.join(os.path.dirname(__file__), "journal.json")
 
 STARTING_BALANCE = 10_000.00
 COMMISSION       = 2.50    # USD per side (open or close)
-TICKERS          = ["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"]
+TICKERS          = ["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"]   # active swing SLEEVE
 MAX_POSITIONS    = len(TICKERS)
+
+# ── HYBRID (2026-07): QQQ 50/200 regime-timing CORE + active swing SLEEVE ──────
+# Backtest (hybrid_backtest.py, 20y): 70/30 core/sleeve = CAGR 12.9% / MaxDD -23%,
+# vs pure swing 10.9% / -13% and QQQ buy-hold 15.9% / -53%. Core holds QQQ while
+# its SMA50 > SMA200, else sits in cash; sleeve trades up to SLEEVE_WEIGHT of equity.
+CORE_TICKER      = "QQQ"
+CORE_WEIGHT      = 0.70    # target fraction of equity held in the QQQ core when ON
+SLEEVE_WEIGHT    = 0.30    # capital cap for the active swing sleeve
+POSITION_TICKERS = TICKERS + [CORE_TICKER]   # all position slots (sleeve + core)
 
 
 def load_portfolio() -> dict:
@@ -35,8 +44,8 @@ def load_portfolio() -> dict:
                 p["positions"][ticker] = old_pos
         p.setdefault("total_commissions", 0.0)
 
-    # Ensure all current tickers are present
-    for t in TICKERS:
+    # Ensure all current tickers are present (sleeve + core)
+    for t in POSITION_TICKERS:
         p["positions"].setdefault(t, _flat_position())
 
     return p
@@ -66,7 +75,7 @@ def _new_portfolio() -> dict:
         "created":           datetime.now().strftime("%Y-%m-%d"),
         "starting_balance":  STARTING_BALANCE,
         "cash":              STARTING_BALANCE,
-        "positions":         {t: _flat_position() for t in TICKERS},
+        "positions":         {t: _flat_position() for t in POSITION_TICKERS},
         "total_trades":      0,
         "winning_trades":    0,
         "losing_trades":     0,

@@ -30,12 +30,12 @@ import pandas as pd
 from portfolio import (
     load_portfolio, save_portfolio, get_equity,
     open_position, close_position, STARTING_BALANCE, COMMISSION,
-    TICKERS, MAX_POSITIONS,
+    TICKERS, MAX_POSITIONS, CORE_TICKER, CORE_WEIGHT, SLEEVE_WEIGHT,
     append_journal_entry, update_journal_outcome,
 )
 from strategy import (
     fetch_data, compute_indicators, generate_signal,
-    size_position, check_exit, get_market_regime,
+    size_position, check_exit, get_market_regime, get_core_regime,
     ATR_STOP_MULT, TRAIL_STOP_PCT, MAX_HOLD_DAYS, COOLDOWN_DAYS,
     STOP_LOSS_PCT_LONG, STOP_LOSS_PCT_SHORT,
     TP_LONG_1, TP_SHORT_1,
@@ -58,6 +58,46 @@ def get_next_earnings(ticker: str):
     except Exception:
         pass
     return None
+
+
+def manage_core(portfolio: dict, equity: float, core_regime: dict,
+                run_date: str, persist: bool = True) -> tuple[dict, float, str, str]:
+    """
+    HYBRID CORE: hold QQQ to ~CORE_WEIGHT of equity while the 50/200 regime is ON;
+    move fully to cash when it flips OFF. All-in / all-out, no ATR stop, ~1 switch/yr.
+    Uses the same open/close primitives as the sleeve so cash accounting stays exact.
+    Returns (portfolio, day_pnl, action, detail).
+    """
+    pos       = portfolio["positions"].get(CORE_TICKER, {})
+    qqq_price = float(core_regime.get("qqq_price") or 0.0)
+    golden    = bool(core_regime.get("golden"))
+
+    if qqq_price <= 0:
+        return portfolio, 0.0, "CORE HOLD", f"{CORE_TICKER}: price unavailable — no core action"
+
+    # regime OFF and we hold the core → sell to cash
+    if not golden and pos.get("active"):
+        portfolio, pnl = close_position(portfolio, CORE_TICKER, qqq_price,
+                                        "Core regime OFF (SMA50<SMA200)", run_date, persist=persist)
+        return portfolio, pnl, "CLOSED CORE", (
+            f"{CORE_TICKER}: SOLD core @ ${qqq_price:.2f} — regime OFF | P&L: ${pnl:+.2f}")
+
+    # regime ON and we're flat → buy core up to target weight (bounded by available cash)
+    if golden and not pos.get("active"):
+        target_dollars = min(CORE_WEIGHT * equity, portfolio["cash"] - COMMISSION)
+        shares = round(target_dollars / qqq_price, 4)
+        if shares > 0 and portfolio["cash"] >= shares * qqq_price + COMMISSION:
+            portfolio = open_position(portfolio, CORE_TICKER, "long", shares, qqq_price,
+                                      0.0, None, "QQQ core (50/200 regime)", run_date)
+            return portfolio, 0.0, "OPENED CORE", (
+                f"{CORE_TICKER}: BOUGHT {shares:.4f} core @ ${qqq_price:.2f} "
+                f"(~{CORE_WEIGHT*100:.0f}% of equity) — regime ON")
+        return portfolio, 0.0, "CORE CASH", f"{CORE_TICKER}: regime ON but insufficient cash"
+
+    # otherwise: hold as-is
+    if pos.get("active"):
+        return portfolio, 0.0, "CORE HOLD", f"{CORE_TICKER}: holding core (regime ON)"
+    return portfolio, 0.0, "CORE CASH", f"{CORE_TICKER}: flat (regime OFF)"
 
 
 def run_day(
@@ -179,8 +219,8 @@ def run_day(
         except Exception as _e:
             signal_data["news"] = {"sentiment": 0.0, "label": "news error", "headlines": [], "flags": []}
 
-        # Count current open positions (don't exceed MAX_POSITIONS)
-        open_count = sum(1 for p in portfolio["positions"].values() if p.get("active"))
+        # Count current open SLEEVE positions (exclude the QQQ core) — cap at MAX_POSITIONS
+        open_count = sum(1 for t in TICKERS if portfolio["positions"].get(t, {}).get("active"))
         if open_count >= MAX_POSITIONS:
             action_detail = f"{ticker}: Signal {signal_data['signal']} — portfolio full ({open_count}/{MAX_POSITIONS} positions)"
         else:
@@ -189,7 +229,8 @@ def run_day(
                 # ATR-based stop (adapts to volatility); ride the trend → no fixed TP
                 stop_loss   = round(entry_price - ATR_STOP_MULT * atr, 2)
                 take_profit = None
-                shares      = size_position(equity, entry_price, stop_loss, MAX_POSITIONS)
+                shares      = size_position(equity, entry_price, stop_loss, MAX_POSITIONS,
+                                            budget_frac=SLEEVE_WEIGHT)
 
                 min_cash_needed = shares * entry_price + COMMISSION
                 if shares > 0 and portfolio["cash"] >= min_cash_needed:
@@ -363,6 +404,11 @@ def main():
         except Exception as e:
             print(f"  {ticker:<6} ERROR: {e}")
 
+    # ── HYBRID CORE regime (QQQ 50/200) — fetch price so equity includes the core ─
+    core_regime = get_core_regime()
+    prices[CORE_TICKER] = core_regime["qqq_price"]
+    print(f"\n  {core_regime['label']}")
+
     if args.status:
         results = {}
         for ticker in TICKERS:
@@ -373,7 +419,15 @@ def main():
         generate_daily_report(portfolio, results, prices, market=market_regime)
         return
 
-    # Run each ticker
+    # ── CORE first: allocate ~70% to the QQQ regime sleeve before the swing book ──
+    equity_now = get_equity(portfolio, prices)
+    portfolio, core_pnl, core_action, core_detail = manage_core(
+        portfolio, equity_now, core_regime, today_date
+    )
+    if core_action not in ("CORE HOLD", "CORE CASH"):
+        print(f"  [CORE] {core_action}: {core_detail}")
+
+    # Run each active sleeve ticker
     results = {}
     for ticker in TICKERS:
         if ticker not in dfs:
@@ -390,8 +444,9 @@ def main():
     if equity > portfolio.get("peak_equity", STARTING_BALANCE):
         portfolio["peak_equity"] = equity
 
-    total_day_pnl = sum(r["pnl"] for r in results.values())
-    actions_str   = " | ".join(f"{t}:{r['action'].split()[0]}" for t, r in results.items())
+    total_day_pnl = core_pnl + sum(r["pnl"] for r in results.values())
+    actions_str   = f"CORE:{core_action.split()[-1]} | " + " | ".join(
+        f"{t}:{r['action'].split()[0]}" for t, r in results.items())
     portfolio.setdefault("daily_log", []).append({
         "date":    today_date,
         "equity":  round(equity, 2),

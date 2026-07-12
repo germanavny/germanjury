@@ -194,6 +194,30 @@ def get_market_regime(period: str = "1y") -> dict:
                 "label": "Market regime unavailable — no gate applied"}
 
 
+def get_core_regime(period: str = "1y") -> dict:
+    """
+    QQQ 50/200 regime for the HYBRID core sleeve. Core is INVESTED while SMA50>SMA200
+    (golden), else in CASH. ~1 switch/yr; matched buy-hold return at half the drawdown
+    over 27y (see method_compare.py / hybrid_backtest.py). No swing logic, no ATR stop.
+    """
+    try:
+        qqq = yf.Ticker("QQQ").history(period=period, auto_adjust=True)
+        qqq.index = pd.to_datetime(qqq.index).tz_localize(None)
+        close = qqq["Close"]
+        sma50  = float(close.rolling(50).mean().iloc[-1])
+        sma200 = float(close.rolling(200).mean().iloc[-1])
+        px     = float(close.iloc[-1])
+        golden = bool(sma50 > sma200)
+        label  = ("CORE ON — QQQ SMA50 > SMA200 (invested)" if golden
+                  else "CORE OFF — QQQ SMA50 < SMA200 (in cash)")
+        return {"golden": golden, "qqq_price": round(px, 2),
+                "sma50": round(sma50, 2), "sma200": round(sma200, 2), "label": label}
+    except Exception:
+        # If QQQ unavailable, be conservative: core OFF (stay in cash, don't guess)
+        return {"golden": False, "qqq_price": 0.0, "sma50": 0.0, "sma200": 0.0,
+                "label": "CORE regime unavailable — staying in cash"}
+
+
 def generate_signal(df: pd.DataFrame, ticker: str = "MSFT", market: dict | None = None) -> dict:
     """
     TREND-FOLLOWING signal generator — trades WITH the trend (Soloway-aligned).
@@ -360,11 +384,13 @@ def generate_signal(df: pd.DataFrame, ticker: str = "MSFT", market: dict | None 
 
 
 def size_position(equity: float, entry_price: float, stop_loss: float,
-                  max_positions: int = 1) -> float:
+                  max_positions: int = 1, budget_frac: float = 0.80) -> float:
     """
     Position sizing:
     - Risk 2% of equity per trade
-    - Cap: never more than (80% / max_positions) of equity in one trade
+    - Cap: never more than (budget_frac / max_positions) of equity in one trade.
+      budget_frac defaults to 0.80 (standalone); the hybrid passes SLEEVE_WEIGHT (0.30)
+      so the active sleeve can never crowd out the QQQ core.
     Returns shares (fractional allowed).
     """
     risk_amount    = equity * RISK_PER_TRADE_PCT
@@ -374,7 +400,7 @@ def size_position(equity: float, entry_price: float, stop_loss: float,
     shares_by_risk = risk_amount / risk_per_share
 
     # Budget cap per position
-    budget_per_pos   = (equity * 0.80) / max_positions
+    budget_per_pos   = (equity * budget_frac) / max_positions
     max_shares_by_budget = budget_per_pos / entry_price
 
     return round(min(shares_by_risk, max_shares_by_budget), 4)

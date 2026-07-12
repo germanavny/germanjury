@@ -27,10 +27,13 @@ import pytz
 
 from portfolio import (
     load_portfolio, save_portfolio, load_trade_log, load_journal,
-    get_equity, STARTING_BALANCE, TICKERS,
+    get_equity, STARTING_BALANCE, TICKERS, CORE_TICKER,
 )
-from strategy import fetch_data, compute_indicators, generate_signal, get_market_regime, MASTER_LEVELS
-from run_trader import run_day
+from strategy import (
+    fetch_data, compute_indicators, generate_signal,
+    get_market_regime, get_core_regime, MASTER_LEVELS,
+)
+from run_trader import run_day, manage_core
 
 app = Flask(__name__)
 
@@ -89,6 +92,19 @@ def run_scheduled_trade():
     market    = get_market_regime()
     print(f"[SCHEDULER] Market regime: {market['label']}")
 
+    # ── HYBRID CORE (QQQ 50/200) — manage first so it gets its ~70% allocation ──
+    core_regime = get_core_regime()
+    prices[CORE_TICKER] = core_regime["qqq_price"]
+    core_pnl = 0.0
+    try:
+        equity_now = get_equity(portfolio, prices)
+        portfolio, core_pnl, core_action, core_detail = manage_core(
+            portfolio, equity_now, core_regime, run_date, persist=True
+        )
+        print(f"[SCHEDULER] CORE: {core_action} | {core_regime['label']}")
+    except Exception as e:
+        print(f"[SCHEDULER] Error on CORE: {e}")
+
     for ticker in TICKERS:
         try:
             df = fetch_data(ticker, period="1y")
@@ -108,7 +124,7 @@ def run_scheduled_trade():
     if equity > portfolio.get("peak_equity", STARTING_BALANCE):
         portfolio["peak_equity"] = equity
 
-    total_day_pnl = sum(r.get("pnl", 0) for r in results.values())
+    total_day_pnl = core_pnl + sum(r.get("pnl", 0) for r in results.values())
     portfolio.setdefault("daily_log", []).append({
         "date":    run_date,
         "equity":  round(equity, 2),
